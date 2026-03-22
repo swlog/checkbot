@@ -1,20 +1,20 @@
 {
   "955670348798505010": {
     "handle": "swlog",
-    "solvedCount": 73,
+    "solvedCount": 74,
     "todayBaseCount": 73,
-    "solvedToday": false,
-    "streak": 0,
-    "maxStreak": 0,
-    "lastSolvedDate": null
+    "solvedToday": true,
+    "streak": 1,
+    "maxStreak": 1,
+    "lastSolvedDate": "2026-03-22"
   },
   "383628279745085440": {
     "handle": "dottery",
-    "solvedCount": 100,
+    "solvedCount": 122,
     "todayBaseCount": 100,
-    "solvedToday": false,
-    "streak": 0,
-    "maxStreak": 0,
-    "lastSolvedDate": null
+    "solvedToday": true,
+    "streak": 1,
+    "maxStreak": 1,
+    "lastSolvedDate": "2026-03-22"
   }
 }

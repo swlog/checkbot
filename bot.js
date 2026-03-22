@@ -100,13 +100,12 @@ async function checkAllUsers() {
  */
 async function midnightReset() {
   const users = loadUsers();
-  const missed = [];
+  const praised = [];
 
   for (const [discordId, user] of Object.entries(users)) {
-    if (!user.solvedToday && user.streak > 0) {
-      missed.push({ discordId, prevStreak: user.streak });
-    }
-    if (!user.solvedToday) {
+    if (user.solvedToday) {
+      praised.push({ discordId, streak: user.streak });
+    } else {
       user.streak = 0;
     }
     // 새 날을 위한 기준값 초기화
@@ -119,20 +118,36 @@ async function midnightReset() {
   const channel = getChannel();
   if (!channel) return;
 
-  if (missed.length > 0) {
-    const lines = missed.map(
-      (u) => `<@${u.discordId}> — 🔥 ${u.prevStreak}일 → 0일`
+  if (praised.length > 0) {
+    const lines = praised.map(
+      (u) => `<@${u.discordId}> — 🔥 ${u.streak}일 연속 달성!`
     );
     const embed = new EmbedBuilder()
-      .setColor(0xff4444)
-      .setTitle("😢 어제 미인증 목록 — 스트릭 초기화")
+      .setColor(0x00c851)
+      .setTitle("🌙 오늘 하루도 수고했어요!")
       .setDescription(lines.join("\n"))
-      .setFooter({ text: "오늘도 화이팅! 새로운 스트릭을 시작하세요." })
+      .setFooter({ text: "내일도 함께 달려봐요 💪" })
       .setTimestamp();
     await channel.send({ embeds: [embed] });
   } else {
-    await channel.send("🎉 어제 모든 스터디원이 인증 완료! 오늘도 화이팅!");
+    await channel.send("🌙 오늘 하루도 수고했어요! 내일은 함께 달려봐요 💪");
   }
+}
+
+/**
+ * 매일 21:00 KST: 저녁 격려 메시지
+ */
+async function eveningEncouragement() {
+  const channel = getChannel();
+  if (!channel) return;
+
+  const embed = new EmbedBuilder()
+    .setColor(0xffa500)
+    .setTitle("🌙 오늘 자정까지 3시간 남았어요!")
+    .setDescription("아직 시간이 있어요. 문제 하나 함께 풀어볼까요? 💻")
+    .setFooter({ text: "1일 1코딩 — 작은 습관이 큰 실력을 만들어요 🚀" })
+    .setTimestamp();
+  await channel.send({ embeds: [embed] });
 }
 
 /**
@@ -143,20 +158,20 @@ async function eveningReminder() {
   const channel = getChannel();
   if (!channel) return;
 
-  const notYet = Object.entries(users)
-    .filter(([, u]) => !u.solvedToday)
-    .map(([id]) => `<@${id}>`);
+  const done = Object.entries(users)
+    .filter(([, u]) => u.solvedToday)
+    .map(([id, u]) => `<@${id}> 🔥 ${u.streak}일`);
 
-  if (notYet.length === 0) {
-    await channel.send("🎉 오늘 모든 스터디원이 문제를 풀었습니다! 최고!");
+  if (done.length === 0) {
+    await channel.send("⏰ 자정까지 아직 시간이 있어요! 오늘 한 문제 도전해봐요 💪");
     return;
   }
 
   const embed = new EmbedBuilder()
-    .setColor(0xffaa00)
-    .setTitle("⏰ 아직 오늘 문제를 안 푸셨나요?")
-    .setDescription(notYet.join(" "))
-    .setFooter({ text: "자정까지 1문제 이상 풀면 스트릭이 유지됩니다!" })
+    .setColor(0x00c851)
+    .setTitle("⏰ 오늘의 인증 현황")
+    .setDescription(done.join("\n"))
+    .setFooter({ text: "아직 자정까지 시간이 있어요! 화이팅 😊" })
     .setTimestamp();
   await channel.send({ embeds: [embed] });
 }
@@ -206,25 +221,19 @@ client.on("messageCreate", async (msg) => {
     }
 
     const solved = [];
-    const notSolved = [];
     for (const [id, u] of entries) {
-      const line = `<@${id}> — 🔥 ${u.streak}일`;
-      (u.solvedToday ? solved : notSolved).push(line);
+      if (u.solvedToday) {
+        solved.push(`<@${id}> — 🔥 ${u.streak}일`);
+      }
     }
 
     const embed = new EmbedBuilder()
       .setColor(0x5865f2)
       .setTitle(`📊 오늘의 현황 (${todayKST()})`)
-      .addFields(
-        {
-          name: `✅ 완료 (${solved.length}명)`,
-          value: solved.join("\n") || "없음",
-        },
-        {
-          name: `❌ 미완료 (${notSolved.length}명)`,
-          value: notSolved.join("\n") || "없음",
-        }
-      )
+      .addFields({
+        name: `✅ 오늘 인증 완료 (${solved.length}명)`,
+        value: solved.join("\n") || "아직 아무도 없어요. 첫 번째 주인공이 되어보세요!",
+      })
       .setTimestamp();
     return msg.channel.send({ embeds: [embed] });
   }
@@ -335,6 +344,11 @@ client.once("ready", () => {
   // 자정 초기화 (KST 00:00 = UTC 15:00)
   cron.schedule("0 15 * * *", () => {
     midnightReset().catch((e) => console.error("[cron] midnightReset:", e));
+  });
+
+  // 저녁 격려 (KST 21:00 = UTC 12:00)
+  cron.schedule("0 12 * * *", () => {
+    eveningEncouragement().catch((e) => console.error("[cron] eveningEncouragement:", e));
   });
 
   // 저녁 리마인더 (KST 23:00 = UTC 14:00)
