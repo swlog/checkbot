@@ -113,10 +113,29 @@ async function midnightReset() {
     user.solvedToday = false;
   }
 
+  const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+
+  // 월요일이면 주간 기준값 초기화
+  if (kst.getDay() === 1) {
+    for (const user of Object.values(users)) {
+      user.weeklyBaseCount = user.solvedCount;
+    }
+  }
+
   saveUsers(users);
 
   const channel = getChannel();
   if (!channel) return;
+
+  // 매월 1일이면 월간 랭킹 발송 후 기준값 초기화
+  if (kst.getDate() === 1) {
+    await monthlyRanking();
+    const updated = loadUsers();
+    for (const user of Object.values(updated)) {
+      user.monthlyBaseCount = user.solvedCount;
+    }
+    saveUsers(updated);
+  }
 
   if (praised.length > 0) {
     const lines = praised.map(
@@ -176,6 +195,78 @@ async function eveningReminder() {
   await channel.send({ embeds: [embed] });
 }
 
+/**
+ * 매월 1일 00:00 KST: 월간 스트릭 랭킹 (3위까지)
+ */
+async function monthlyRanking() {
+  const users = loadUsers();
+  const channel = getChannel();
+  if (!channel) return;
+
+  const entries = Object.entries(users);
+  if (entries.length === 0) return;
+
+  const sorted = entries
+    .sort(([, a], [, b]) => {
+      if (b.streak !== a.streak) return b.streak - a.streak;
+      const aMonthly = a.solvedCount - (a.monthlyBaseCount ?? a.solvedCount);
+      const bMonthly = b.solvedCount - (b.monthlyBaseCount ?? b.solvedCount);
+      return bMonthly - aMonthly;
+    })
+    .slice(0, 3);
+
+  const medals = ["🥇", "🥈", "🥉"];
+  const lines = sorted.map(([id, u], i) => {
+    const monthly = u.solvedCount - (u.monthlyBaseCount ?? u.solvedCount);
+    return `${medals[i]} <@${id}> — 🔥 ${u.streak}일 | 이번 달 ${monthly}문제`;
+  });
+
+  const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  const month = `${now.getFullYear()}년 ${now.getMonth() + 1}월`;
+
+  const embed = new EmbedBuilder()
+    .setColor(0xff6f00)
+    .setTitle(`🗓️ ${month} 월간 랭킹 TOP 3`)
+    .setDescription(lines.join("\n"))
+    .setFooter({ text: "스트릭 동점 시 이번 달 풀이 수로 결정" })
+    .setTimestamp();
+  await channel.send({ embeds: [embed] });
+}
+
+/**
+ * 매주 일요일 22:00 KST: 주간 스트릭 랭킹
+ */
+async function weeklyRanking() {
+  const users = loadUsers();
+  const channel = getChannel();
+  if (!channel) return;
+
+  const entries = Object.entries(users);
+  if (entries.length === 0) return;
+
+  const sorted = entries.sort(([, a], [, b]) => {
+    if (b.streak !== a.streak) return b.streak - a.streak;
+    const aWeekly = a.solvedCount - (a.weeklyBaseCount ?? a.solvedCount);
+    const bWeekly = b.solvedCount - (b.weeklyBaseCount ?? b.solvedCount);
+    return bWeekly - aWeekly;
+  });
+
+  const medals = ["🥇", "🥈", "🥉"];
+  const lines = sorted.map(([id, u], i) => {
+    const medal = medals[i] ?? `${i + 1}.`;
+    const weekly = u.solvedCount - (u.weeklyBaseCount ?? u.solvedCount);
+    return `${medal} <@${id}> — 🔥 ${u.streak}일 | 이번 주 ${weekly}문제`;
+  });
+
+  const embed = new EmbedBuilder()
+    .setColor(0xffd700)
+    .setTitle("🏆 이번 주 스트릭 랭킹")
+    .setDescription(lines.join("\n"))
+    .setFooter({ text: "스트릭 동점 시 이번 주 풀이 수로 결정" })
+    .setTimestamp();
+  await channel.send({ embeds: [embed] });
+}
+
 // ── 명령어 처리 ───────────────────────────────────────────────────────────────
 
 client.on("messageCreate", async (msg) => {
@@ -197,6 +288,8 @@ client.on("messageCreate", async (msg) => {
         handle,
         solvedCount,
         todayBaseCount: solvedCount,
+        weeklyBaseCount: solvedCount,
+        monthlyBaseCount: solvedCount,
         solvedToday: false,
         streak: 0,
         maxStreak: 0,
@@ -236,6 +329,18 @@ client.on("messageCreate", async (msg) => {
       })
       .setTimestamp();
     return msg.channel.send({ embeds: [embed] });
+  }
+
+  // !주간랭킹
+  if (cmd === "!주간랭킹") {
+    await weeklyRanking();
+    return;
+  }
+
+  // !월간랭킹
+  if (cmd === "!월간랭킹") {
+    await monthlyRanking();
+    return;
   }
 
   // !랭킹
@@ -323,6 +428,8 @@ client.on("messageCreate", async (msg) => {
         { name: "`!등록 <백준ID>`", value: "백준 아이디를 등록합니다." },
         { name: "`!현황`", value: "오늘의 풀이 현황을 확인합니다." },
         { name: "`!랭킹`", value: "스트릭 랭킹을 확인합니다." },
+        { name: "`!주간랭킹`", value: "이번 주 스트릭 랭킹을 확인합니다." },
+        { name: "`!월간랭킹`", value: "이번 달 스트릭 랭킹 TOP 3을 확인합니다." },
         { name: "`!내정보`", value: "내 풀이 정보를 확인합니다." },
         { name: "`!삭제`", value: "등록 정보를 삭제합니다." }
       )
@@ -344,6 +451,11 @@ client.once("ready", () => {
   // 자정 초기화 (KST 00:00 = UTC 15:00)
   cron.schedule("0 15 * * *", () => {
     midnightReset().catch((e) => console.error("[cron] midnightReset:", e));
+  });
+
+  // 주간 랭킹 (일요일 KST 22:00 = UTC 13:00)
+  cron.schedule("0 13 * * 0", () => {
+    weeklyRanking().catch((e) => console.error("[cron] weeklyRanking:", e));
   });
 
   // 저녁 격려 (KST 21:00 = UTC 12:00)
