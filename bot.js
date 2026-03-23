@@ -33,9 +33,12 @@ const User = mongoose.model("User", userSchema);
 
 // ── 유틸 ──────────────────────────────────────────────────────────────────────
 
+function nowKST() {
+  return new Date(Date.now() + 9 * 60 * 60 * 1000);
+}
+
 function todayKST() {
-  const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
-  return kst.toISOString().slice(0, 10);
+  return nowKST().toISOString().slice(0, 10);
 }
 
 async function getSolvedCount(handle) {
@@ -104,7 +107,9 @@ async function midnightReset() {
   const users = await User.find();
   const praised = [];
 
-  const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  const kst = nowKST();
+  const isMonday = kst.getDay() === 1;
+  const isFirstDay = kst.getDate() === 1;
 
   for (const user of users) {
     if (user.solvedToday) {
@@ -114,26 +119,15 @@ async function midnightReset() {
     }
     user.todayBaseCount = user.solvedCount;
     user.solvedToday = false;
-
-    // 월요일이면 주간 기준값 초기화
-    if (kst.getDay() === 1) {
-      user.weeklyBaseCount = user.solvedCount;
-    }
-
+    if (isMonday) user.weeklyBaseCount = user.solvedCount;
+    if (isFirstDay) user.monthlyBaseCount = user.solvedCount;
     await user.save();
   }
 
   const channel = getChannel();
   if (!channel) return;
 
-  // 매월 1일이면 월간 랭킹 발송 후 기준값 초기화
-  if (kst.getDate() === 1) {
-    await monthlyRanking();
-    for (const user of users) {
-      user.monthlyBaseCount = user.solvedCount;
-      await user.save();
-    }
-  }
+  if (isFirstDay) await monthlyRanking();
 
   if (praised.length > 0) {
     const lines = praised.map(
@@ -187,29 +181,28 @@ async function eveningReminder() {
   await channel.send({ embeds: [embed] });
 }
 
+function sortByStreakThenSolved(users, baseKey) {
+  return [...users].sort((a, b) => {
+    if (b.streak !== a.streak) return b.streak - a.streak;
+    return (b.solvedCount - (b[baseKey] ?? b.solvedCount)) -
+           (a.solvedCount - (a[baseKey] ?? a.solvedCount));
+  });
+}
+
 async function monthlyRanking() {
   const users = await User.find();
   const channel = getChannel();
-  if (!channel) return;
-  if (users.length === 0) return;
+  if (!channel || users.length === 0) return;
 
-  const sorted = [...users]
-    .sort((a, b) => {
-      if (b.streak !== a.streak) return b.streak - a.streak;
-      const aMonthly = a.solvedCount - (a.monthlyBaseCount ?? a.solvedCount);
-      const bMonthly = b.solvedCount - (b.monthlyBaseCount ?? b.solvedCount);
-      return bMonthly - aMonthly;
-    })
-    .slice(0, 3);
-
+  const kst = nowKST();
+  const month = `${kst.getFullYear()}년 ${kst.getMonth() + 1}월`;
   const medals = ["🥇", "🥈", "🥉"];
-  const lines = sorted.map((u, i) => {
-    const monthly = u.solvedCount - (u.monthlyBaseCount ?? u.solvedCount);
-    return `${medals[i]} <@${u.discordId}> — 🔥 ${u.streak}일 | 이번 달 ${monthly}문제`;
-  });
-
-  const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
-  const month = `${now.getFullYear()}년 ${now.getMonth() + 1}월`;
+  const lines = sortByStreakThenSolved(users, "monthlyBaseCount")
+    .slice(0, 3)
+    .map((u, i) => {
+      const count = u.solvedCount - (u.monthlyBaseCount ?? u.solvedCount);
+      return `${medals[i]} <@${u.discordId}> — 🔥 ${u.streak}일 | 이번 달 ${count}문제`;
+    });
 
   const embed = new EmbedBuilder()
     .setColor(0xff6f00)
@@ -223,22 +216,15 @@ async function monthlyRanking() {
 async function weeklyRanking() {
   const users = await User.find();
   const channel = getChannel();
-  if (!channel) return;
-  if (users.length === 0) return;
-
-  const sorted = [...users].sort((a, b) => {
-    if (b.streak !== a.streak) return b.streak - a.streak;
-    const aWeekly = a.solvedCount - (a.weeklyBaseCount ?? a.solvedCount);
-    const bWeekly = b.solvedCount - (b.weeklyBaseCount ?? b.solvedCount);
-    return bWeekly - aWeekly;
-  });
+  if (!channel || users.length === 0) return;
 
   const medals = ["🥇", "🥈", "🥉"];
-  const lines = sorted.map((u, i) => {
-    const medal = medals[i] ?? `${i + 1}.`;
-    const weekly = u.solvedCount - (u.weeklyBaseCount ?? u.solvedCount);
-    return `${medal} <@${u.discordId}> — 🔥 ${u.streak}일 | 이번 주 ${weekly}문제`;
-  });
+  const lines = sortByStreakThenSolved(users, "weeklyBaseCount")
+    .map((u, i) => {
+      const medal = medals[i] ?? `${i + 1}.`;
+      const count = u.solvedCount - (u.weeklyBaseCount ?? u.solvedCount);
+      return `${medal} <@${u.discordId}> — 🔥 ${u.streak}일 | 이번 주 ${count}문제`;
+    });
 
   const embed = new EmbedBuilder()
     .setColor(0xffd700)
