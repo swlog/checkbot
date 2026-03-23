@@ -397,7 +397,7 @@ async function main() {
 client.once("ready", () => {
   console.log(`✅ 봇 로그인: ${client.user.tag}`);
 
-  cron.schedule("*/5 * * * *", () => {
+  cron.schedule("* * * * *", () => {
     checkAllUsers().catch((e) => console.error("[cron] checkAllUsers:", e));
   });
 
