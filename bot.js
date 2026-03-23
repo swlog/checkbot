@@ -61,8 +61,6 @@ async function checkUser(user) {
   // 이전 체크 이후 새 문제를 풀었을 때만 알림
   if (currentCount > user.solvedCount) {
     const todaySolved = currentCount - user.todayBaseCount;
-    const weeklySolved = currentCount - user.weeklyBaseCount;
-    const monthlySolved = currentCount - user.monthlyBaseCount;
 
     // 오늘 첫 풀이면 스트릭 증가
     if (!user.solvedToday) {
@@ -83,11 +81,7 @@ async function checkUser(user) {
         .setDescription(`<@${user.discordId}> 문제를 풀었습니다! 🎉`)
         .addFields(
           { name: "🔥 스트릭", value: `${user.streak}일`, inline: true },
-          { name: "🏆 최고 스트릭", value: `${user.maxStreak}일`, inline: true },
-          { name: "📅 오늘", value: `${todaySolved}문제`, inline: true },
-          { name: "📆 이번 주", value: `${weeklySolved}문제`, inline: true },
-          { name: "🗓️ 이번 달", value: `${monthlySolved}문제`, inline: true },
-          { name: "📝 총", value: `${currentCount}문제`, inline: true }
+          { name: "📅 오늘 푼 문제", value: `${todaySolved}문제`, inline: true }
         )
         .setTimestamp();
       await channel.send({ embeds: [embed] });
