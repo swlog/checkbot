@@ -97,11 +97,13 @@ async function checkUser(user) {
 
 async function checkAllUsers() {
   const users = await User.find();
-  await Promise.allSettled(users.map((user) =>
-    checkUser(user).catch((err) =>
-      console.error(`[checkAllUsers] ${user.handle}: ${err.message}`)
-    )
-  ));
+  for (const user of users) {
+    try {
+      await checkUser(user);
+    } catch (err) {
+      console.error(`[checkAllUsers] ${user.handle}: ${err.message}`);
+    }
+  }
 }
 
 async function midnightReset() {
