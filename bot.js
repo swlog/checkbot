@@ -1,8 +1,8 @@
 require("dotenv").config();
 const { Client, GatewayIntentBits, EmbedBuilder } = require("discord.js");
 const axios = require("axios");
-const fs = require("fs");
 const cron = require("node-cron");
+const mongoose = require("mongoose");
 
 const client = new Client({
   intents: [
@@ -13,18 +13,25 @@ const client = new Client({
 });
 
 const CHANNEL_ID = process.env.CHANNEL_ID;
-const USERS_FILE = "./users.json";
+
+// ── MongoDB 스키마 ─────────────────────────────────────────────────────────────
+
+const userSchema = new mongoose.Schema({
+  discordId: { type: String, required: true, unique: true },
+  handle: String,
+  solvedCount: { type: Number, default: 0 },
+  todayBaseCount: { type: Number, default: 0 },
+  weeklyBaseCount: { type: Number, default: 0 },
+  monthlyBaseCount: { type: Number, default: 0 },
+  solvedToday: { type: Boolean, default: false },
+  streak: { type: Number, default: 0 },
+  maxStreak: { type: Number, default: 0 },
+  lastSolvedDate: { type: String, default: null },
+});
+
+const User = mongoose.model("User", userSchema);
 
 // ── 유틸 ──────────────────────────────────────────────────────────────────────
-
-function loadUsers() {
-  if (!fs.existsSync(USERS_FILE)) return {};
-  return JSON.parse(fs.readFileSync(USERS_FILE, "utf-8"));
-}
-
-function saveUsers(data) {
-  fs.writeFileSync(USERS_FILE, JSON.stringify(data, null, 2));
-}
 
 function todayKST() {
   const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
@@ -44,19 +51,13 @@ function getChannel() {
 
 // ── 핵심 로직 ─────────────────────────────────────────────────────────────────
 
-/**
- * 5분마다 실행: solved.ac에서 풀이 수를 갱신하고,
- * 오늘 새 문제를 푼 사람에게 인증 메시지를 보냄
- */
 async function checkAllUsers() {
-  const users = loadUsers();
-  let changed = false;
+  const users = await User.find();
 
-  for (const [discordId, user] of Object.entries(users)) {
+  for (const user of users) {
     try {
       const currentCount = await getSolvedCount(user.handle);
 
-      // todayBaseCount 미설정 시 초기화
       if (user.todayBaseCount == null) {
         user.todayBaseCount = currentCount;
       }
@@ -72,7 +73,7 @@ async function checkAllUsers() {
           const embed = new EmbedBuilder()
             .setColor(0x00c851)
             .setTitle("✅ 오늘의 문제 풀이 인증!")
-            .setDescription(`<@${discordId}> 오늘 문제를 풀었습니다!`)
+            .setDescription(`<@${user.discordId}> 오늘 문제를 풀었습니다!`)
             .addFields(
               { name: "🔥 현재 스트릭", value: `${user.streak}일`, inline: true },
               { name: "🏆 최고 스트릭", value: `${user.maxStreak}일`, inline: true }
@@ -80,49 +81,41 @@ async function checkAllUsers() {
             .setTimestamp();
           await channel.send({ embeds: [embed] });
         }
-        changed = true;
       }
 
       if (currentCount !== user.solvedCount) {
         user.solvedCount = currentCount;
-        changed = true;
       }
+
+      await user.save();
     } catch (err) {
       console.error(`[checkAllUsers] ${user.handle}: ${err.message}`);
     }
   }
-
-  if (changed) saveUsers(users);
 }
 
-/**
- * 매일 00:00 KST: 어제 미인증자 스트릭 초기화 후 공지
- */
 async function midnightReset() {
-  const users = loadUsers();
+  const users = await User.find();
   const praised = [];
-
-  for (const [discordId, user] of Object.entries(users)) {
-    if (user.solvedToday) {
-      praised.push({ discordId, streak: user.streak });
-    } else {
-      user.streak = 0;
-    }
-    // 새 날을 위한 기준값 초기화
-    user.todayBaseCount = user.solvedCount;
-    user.solvedToday = false;
-  }
 
   const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
 
-  // 월요일이면 주간 기준값 초기화
-  if (kst.getDay() === 1) {
-    for (const user of Object.values(users)) {
+  for (const user of users) {
+    if (user.solvedToday) {
+      praised.push({ discordId: user.discordId, streak: user.streak });
+    } else {
+      user.streak = 0;
+    }
+    user.todayBaseCount = user.solvedCount;
+    user.solvedToday = false;
+
+    // 월요일이면 주간 기준값 초기화
+    if (kst.getDay() === 1) {
       user.weeklyBaseCount = user.solvedCount;
     }
-  }
 
-  saveUsers(users);
+    await user.save();
+  }
 
   const channel = getChannel();
   if (!channel) return;
@@ -130,11 +123,10 @@ async function midnightReset() {
   // 매월 1일이면 월간 랭킹 발송 후 기준값 초기화
   if (kst.getDate() === 1) {
     await monthlyRanking();
-    const updated = loadUsers();
-    for (const user of Object.values(updated)) {
+    for (const user of users) {
       user.monthlyBaseCount = user.solvedCount;
+      await user.save();
     }
-    saveUsers(updated);
   }
 
   if (praised.length > 0) {
@@ -153,9 +145,6 @@ async function midnightReset() {
   }
 }
 
-/**
- * 매일 21:00 KST: 저녁 격려 메시지
- */
 async function eveningEncouragement() {
   const channel = getChannel();
   if (!channel) return;
@@ -169,17 +158,14 @@ async function eveningEncouragement() {
   await channel.send({ embeds: [embed] });
 }
 
-/**
- * 매일 23:00 KST: 아직 풀지 않은 사람에게 리마인더
- */
 async function eveningReminder() {
-  const users = loadUsers();
+  const users = await User.find();
   const channel = getChannel();
   if (!channel) return;
 
-  const done = Object.entries(users)
-    .filter(([, u]) => u.solvedToday)
-    .map(([id, u]) => `<@${id}> 🔥 ${u.streak}일`);
+  const done = users
+    .filter((u) => u.solvedToday)
+    .map((u) => `<@${u.discordId}> 🔥 ${u.streak}일`);
 
   if (done.length === 0) {
     await channel.send("⏰ 자정까지 아직 시간이 있어요! 오늘 한 문제 도전해봐요 💪");
@@ -195,19 +181,14 @@ async function eveningReminder() {
   await channel.send({ embeds: [embed] });
 }
 
-/**
- * 매월 1일 00:00 KST: 월간 스트릭 랭킹 (3위까지)
- */
 async function monthlyRanking() {
-  const users = loadUsers();
+  const users = await User.find();
   const channel = getChannel();
   if (!channel) return;
+  if (users.length === 0) return;
 
-  const entries = Object.entries(users);
-  if (entries.length === 0) return;
-
-  const sorted = entries
-    .sort(([, a], [, b]) => {
+  const sorted = [...users]
+    .sort((a, b) => {
       if (b.streak !== a.streak) return b.streak - a.streak;
       const aMonthly = a.solvedCount - (a.monthlyBaseCount ?? a.solvedCount);
       const bMonthly = b.solvedCount - (b.monthlyBaseCount ?? b.solvedCount);
@@ -216,9 +197,9 @@ async function monthlyRanking() {
     .slice(0, 3);
 
   const medals = ["🥇", "🥈", "🥉"];
-  const lines = sorted.map(([id, u], i) => {
+  const lines = sorted.map((u, i) => {
     const monthly = u.solvedCount - (u.monthlyBaseCount ?? u.solvedCount);
-    return `${medals[i]} <@${id}> — 🔥 ${u.streak}일 | 이번 달 ${monthly}문제`;
+    return `${medals[i]} <@${u.discordId}> — 🔥 ${u.streak}일 | 이번 달 ${monthly}문제`;
   });
 
   const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
@@ -233,18 +214,13 @@ async function monthlyRanking() {
   await channel.send({ embeds: [embed] });
 }
 
-/**
- * 매주 일요일 22:00 KST: 주간 스트릭 랭킹
- */
 async function weeklyRanking() {
-  const users = loadUsers();
+  const users = await User.find();
   const channel = getChannel();
   if (!channel) return;
+  if (users.length === 0) return;
 
-  const entries = Object.entries(users);
-  if (entries.length === 0) return;
-
-  const sorted = entries.sort(([, a], [, b]) => {
+  const sorted = [...users].sort((a, b) => {
     if (b.streak !== a.streak) return b.streak - a.streak;
     const aWeekly = a.solvedCount - (a.weeklyBaseCount ?? a.solvedCount);
     const bWeekly = b.solvedCount - (b.weeklyBaseCount ?? b.solvedCount);
@@ -252,10 +228,10 @@ async function weeklyRanking() {
   });
 
   const medals = ["🥇", "🥈", "🥉"];
-  const lines = sorted.map(([id, u], i) => {
+  const lines = sorted.map((u, i) => {
     const medal = medals[i] ?? `${i + 1}.`;
     const weekly = u.solvedCount - (u.weeklyBaseCount ?? u.solvedCount);
-    return `${medal} <@${id}> — 🔥 ${u.streak}일 | 이번 주 ${weekly}문제`;
+    return `${medal} <@${u.discordId}> — 🔥 ${u.streak}일 | 이번 주 ${weekly}문제`;
   });
 
   const embed = new EmbedBuilder()
@@ -283,22 +259,23 @@ client.on("messageCreate", async (msg) => {
     }
     try {
       const solvedCount = await getSolvedCount(handle);
-      const users = loadUsers();
-      users[msg.author.id] = {
-        handle,
-        solvedCount,
-        todayBaseCount: solvedCount,
-        weeklyBaseCount: solvedCount,
-        monthlyBaseCount: solvedCount,
-        solvedToday: false,
-        streak: 0,
-        maxStreak: 0,
-        lastSolvedDate: null,
-      };
-      saveUsers(users);
-      msg.reply(
-        `✅ 등록 완료! 백준 ID: **${handle}** (총 **${solvedCount}**문제 해결)`
+      await User.findOneAndUpdate(
+        { discordId: msg.author.id },
+        {
+          discordId: msg.author.id,
+          handle,
+          solvedCount,
+          todayBaseCount: solvedCount,
+          weeklyBaseCount: solvedCount,
+          monthlyBaseCount: solvedCount,
+          solvedToday: false,
+          streak: 0,
+          maxStreak: 0,
+          lastSolvedDate: null,
+        },
+        { upsert: true, new: true }
       );
+      msg.reply(`✅ 등록 완료! 백준 ID: **${handle}** (총 **${solvedCount}**문제 해결)`);
     } catch {
       msg.reply("❌ 백준 ID를 찾을 수 없습니다. 아이디를 다시 확인해주세요.");
     }
@@ -307,18 +284,12 @@ client.on("messageCreate", async (msg) => {
 
   // !현황
   if (cmd === "!현황") {
-    const users = loadUsers();
-    const entries = Object.entries(users);
-    if (entries.length === 0) {
-      return msg.reply("등록된 스터디원이 없습니다.");
-    }
+    const users = await User.find();
+    if (users.length === 0) return msg.reply("등록된 스터디원이 없습니다.");
 
-    const solved = [];
-    for (const [id, u] of entries) {
-      if (u.solvedToday) {
-        solved.push(`<@${id}> — 🔥 ${u.streak}일`);
-      }
-    }
+    const solved = users
+      .filter((u) => u.solvedToday)
+      .map((u) => `<@${u.discordId}> — 🔥 ${u.streak}일`);
 
     const embed = new EmbedBuilder()
       .setColor(0x5865f2)
@@ -345,19 +316,18 @@ client.on("messageCreate", async (msg) => {
 
   // !랭킹
   if (cmd === "!랭킹") {
-    const users = loadUsers();
-    const sorted = Object.entries(users).sort(
-      ([, a], [, b]) => b.streak - a.streak || b.maxStreak - a.maxStreak
+    const users = await User.find();
+    if (users.length === 0) return msg.reply("등록된 스터디원이 없습니다.");
+
+    const sorted = [...users].sort(
+      (a, b) => b.streak - a.streak || b.maxStreak - a.maxStreak
     );
-    if (sorted.length === 0) {
-      return msg.reply("등록된 스터디원이 없습니다.");
-    }
 
     const medals = ["🥇", "🥈", "🥉"];
-    const lines = sorted.map(([id, u], i) => {
+    const lines = sorted.map((u, i) => {
       const medal = medals[i] ?? `${i + 1}.`;
       const check = u.solvedToday ? "✅" : "❌";
-      return `${medal} <@${id}> — 🔥 ${u.streak}일 ${check}`;
+      return `${medal} <@${u.discordId}> — 🔥 ${u.streak}일 ${check}`;
     });
 
     const embed = new EmbedBuilder()
@@ -370,12 +340,9 @@ client.on("messageCreate", async (msg) => {
 
   // !내정보
   if (cmd === "!내정보") {
-    const users = loadUsers();
-    const user = users[msg.author.id];
+    const user = await User.findOne({ discordId: msg.author.id });
     if (!user) {
-      return msg.reply(
-        "등록된 정보가 없습니다. `!등록 <백준ID>`로 먼저 등록하세요."
-      );
+      return msg.reply("등록된 정보가 없습니다. `!등록 <백준ID>`로 먼저 등록하세요.");
     }
 
     const embed = new EmbedBuilder()
@@ -383,26 +350,10 @@ client.on("messageCreate", async (msg) => {
       .setTitle(`👤 ${user.handle}의 정보`)
       .addFields(
         { name: "🔥 현재 스트릭", value: `${user.streak}일`, inline: true },
-        {
-          name: "🏆 최고 스트릭",
-          value: `${user.maxStreak || 0}일`,
-          inline: true,
-        },
-        {
-          name: "📝 총 풀이 수",
-          value: `${user.solvedCount}문제`,
-          inline: true,
-        },
-        {
-          name: "✅ 오늘 풀이",
-          value: user.solvedToday ? "완료" : "미완료",
-          inline: true,
-        },
-        {
-          name: "📅 마지막 풀이일",
-          value: user.lastSolvedDate || "없음",
-          inline: true,
-        }
+        { name: "🏆 최고 스트릭", value: `${user.maxStreak || 0}일`, inline: true },
+        { name: "📝 총 풀이 수", value: `${user.solvedCount}문제`, inline: true },
+        { name: "✅ 오늘 풀이", value: user.solvedToday ? "완료" : "미완료", inline: true },
+        { name: "📅 마지막 풀이일", value: user.lastSolvedDate || "없음", inline: true }
       )
       .setTimestamp();
     return msg.channel.send({ embeds: [embed] });
@@ -410,12 +361,8 @@ client.on("messageCreate", async (msg) => {
 
   // !삭제
   if (cmd === "!삭제") {
-    const users = loadUsers();
-    if (!users[msg.author.id]) {
-      return msg.reply("등록된 정보가 없습니다.");
-    }
-    delete users[msg.author.id];
-    saveUsers(users);
+    const result = await User.findOneAndDelete({ discordId: msg.author.id });
+    if (!result) return msg.reply("등록된 정보가 없습니다.");
     return msg.reply("✅ 등록 정보가 삭제되었습니다.");
   }
 
@@ -440,33 +387,38 @@ client.on("messageCreate", async (msg) => {
 
 // ── 봇 시작 ───────────────────────────────────────────────────────────────────
 
+async function main() {
+  await mongoose.connect(process.env.MONGODB_URI);
+  console.log("✅ MongoDB 연결 성공");
+
+  await client.login(process.env.DISCORD_TOKEN);
+}
+
 client.once("ready", () => {
   console.log(`✅ 봇 로그인: ${client.user.tag}`);
 
-  // 5분마다 풀이 체크
   cron.schedule("*/5 * * * *", () => {
     checkAllUsers().catch((e) => console.error("[cron] checkAllUsers:", e));
   });
 
-  // 자정 초기화 (KST 00:00 = UTC 15:00)
   cron.schedule("0 15 * * *", () => {
     midnightReset().catch((e) => console.error("[cron] midnightReset:", e));
   });
 
-  // 주간 랭킹 (일요일 KST 22:00 = UTC 13:00)
   cron.schedule("0 13 * * 0", () => {
     weeklyRanking().catch((e) => console.error("[cron] weeklyRanking:", e));
   });
 
-  // 저녁 격려 (KST 21:00 = UTC 12:00)
   cron.schedule("0 12 * * *", () => {
     eveningEncouragement().catch((e) => console.error("[cron] eveningEncouragement:", e));
   });
 
-  // 저녁 리마인더 (KST 23:00 = UTC 14:00)
   cron.schedule("0 14 * * *", () => {
     eveningReminder().catch((e) => console.error("[cron] eveningReminder:", e));
   });
 });
 
-client.login(process.env.DISCORD_TOKEN);
+main().catch((e) => {
+  console.error("시작 실패:", e);
+  process.exit(1);
+});
