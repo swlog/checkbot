@@ -51,47 +51,57 @@ function getChannel() {
 
 // ── 핵심 로직 ─────────────────────────────────────────────────────────────────
 
-async function checkAllUsers() {
-  const users = await User.find();
+async function checkUser(user) {
+  const currentCount = await getSolvedCount(user.handle);
 
-  for (const user of users) {
-    try {
-      const currentCount = await getSolvedCount(user.handle);
+  if (user.todayBaseCount == null) user.todayBaseCount = currentCount;
+  if (user.weeklyBaseCount == null) user.weeklyBaseCount = currentCount;
+  if (user.monthlyBaseCount == null) user.monthlyBaseCount = currentCount;
 
-      if (user.todayBaseCount == null) {
-        user.todayBaseCount = currentCount;
-      }
+  // 이전 체크 이후 새 문제를 풀었을 때만 알림
+  if (currentCount > user.solvedCount) {
+    const todaySolved = currentCount - user.todayBaseCount;
+    const weeklySolved = currentCount - user.weeklyBaseCount;
+    const monthlySolved = currentCount - user.monthlyBaseCount;
 
-      if (currentCount > user.todayBaseCount && !user.solvedToday) {
-        user.solvedToday = true;
-        user.streak += 1;
-        user.maxStreak = Math.max(user.maxStreak || 0, user.streak);
-        user.lastSolvedDate = todayKST();
+    // 오늘 첫 풀이면 스트릭 증가
+    if (!user.solvedToday) {
+      user.solvedToday = true;
+      user.streak += 1;
+      user.maxStreak = Math.max(user.maxStreak || 0, user.streak);
+      user.lastSolvedDate = todayKST();
+    }
 
-        const channel = getChannel();
-        if (channel) {
-          const embed = new EmbedBuilder()
-            .setColor(0x00c851)
-            .setTitle("✅ 오늘의 문제 풀이 인증!")
-            .setDescription(`<@${user.discordId}> 오늘 문제를 풀었습니다!`)
-            .addFields(
-              { name: "🔥 현재 스트릭", value: `${user.streak}일`, inline: true },
-              { name: "🏆 최고 스트릭", value: `${user.maxStreak}일`, inline: true }
-            )
-            .setTimestamp();
-          await channel.send({ embeds: [embed] });
-        }
-      }
+    user.solvedCount = currentCount;
+    await user.save();
 
-      if (currentCount !== user.solvedCount) {
-        user.solvedCount = currentCount;
-      }
-
-      await user.save();
-    } catch (err) {
-      console.error(`[checkAllUsers] ${user.handle}: ${err.message}`);
+    const channel = getChannel();
+    if (channel) {
+      const embed = new EmbedBuilder()
+        .setColor(0x00c851)
+        .setTitle("✅ 문제 풀이 인증!")
+        .setDescription(`<@${user.discordId}> 문제를 풀었습니다! 🎉`)
+        .addFields(
+          { name: "🔥 스트릭", value: `${user.streak}일`, inline: true },
+          { name: "🏆 최고 스트릭", value: `${user.maxStreak}일`, inline: true },
+          { name: "📅 오늘", value: `${todaySolved}문제`, inline: true },
+          { name: "📆 이번 주", value: `${weeklySolved}문제`, inline: true },
+          { name: "🗓️ 이번 달", value: `${monthlySolved}문제`, inline: true },
+          { name: "📝 총", value: `${currentCount}문제`, inline: true }
+        )
+        .setTimestamp();
+      await channel.send({ embeds: [embed] });
     }
   }
+}
+
+async function checkAllUsers() {
+  const users = await User.find();
+  await Promise.allSettled(users.map((user) =>
+    checkUser(user).catch((err) =>
+      console.error(`[checkAllUsers] ${user.handle}: ${err.message}`)
+    )
+  ));
 }
 
 async function midnightReset() {
